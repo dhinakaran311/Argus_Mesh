@@ -1,0 +1,166 @@
+[
+  {
+    "feature": "num_transactions_total",
+    "mean_abs_shap": 5.064114093780518
+  },
+  {
+    "feature": "num_returns",
+    "mean_abs_shap": 1.01521635055542
+  },
+  {
+    "feature": "return_rate",
+    "mean_abs_shap": 0.15526992082595825
+  },
+  {
+    "feature": "num_orders",
+    "mean_abs_shap": 0.04431673139333725
+  },
+  {
+    "feature": "total_spend",
+    "mean_abs_shap": 0.016471583396196365
+  },
+  {
+    "feature": "is_verified",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "account_age_days",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "account_creation_hour",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "created_on_weekend",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "max_txn_amount",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "avg_txn_amount",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "created_late_night",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "std_txn_amount",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "unique_ips_used",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "failed_payment_rate",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "multi_attempt_rate",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "unique_devices_used",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "txn_lifespan_days",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "days_since_last_txn",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "unique_merchants",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "txn_velocity_overall",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "txn_velocity_30d",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "txn_velocity_7d",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "avg_order_amt",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "refund_rate",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "avg_days_return",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "changed_mind_return_rate",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "worst_device_account_count",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "worst_device_txn_count",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "worst_device_new_accounts_24h",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "worst_ip_account_count",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "worst_ip_txn_count",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "worst_ip_merchant_count",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "cluster_size",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "log_cluster_size",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "cluster_return_rate",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "cluster_min_account_age",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "cluster_avg_txn_velocity",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "cluster_accounts_created_24h",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "cluster_24h_creation_rate",
+    "mean_abs_shap": 0.0
+  },
+  {
+    "feature": "cluster_merchant_concentration",
+    "mean_abs_shap": 0.0
+  }
+]
