@@ -1,5 +1,9 @@
 // lib/api.ts — typed fetch wrappers for all backend endpoints
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
+// ALWAYS use relative paths so Next.js proxy handles CORS for client-side fetches
+const isServer = typeof window === 'undefined'
+const BASE = isServer
+  ? (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000')
+  : '' // client-side: use relative path through Next.js proxy rewrite
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { cache: 'no-store' })
@@ -63,17 +67,6 @@ export interface Transaction {
   merchant_id?: string
 }
 
-export interface ModelMetrics {
-  evaluation_date?: string
-  model_version?: string
-  auc_roc?: number
-  precision?: number
-  recall?: number
-  f1?: number
-  accuracy?: number
-  [key: string]: unknown
-}
-
 export interface ReactFlowData {
   nodes: Array<{
     id: string
@@ -90,7 +83,6 @@ export interface ReactFlowData {
   }>
 }
 
-/* ── API calls ────────────────────────────────────────────────────────── */
 /* ── Response unwrappers (match actual backend shapes) ── */
 async function getTransactions(limit: number, offset: number): Promise<Transaction[]> {
   const res = await get<{ transactions: Transaction[] } | Transaction[]>(
@@ -110,8 +102,7 @@ async function getClusters(limit: number): Promise<ClusterSummary[]> {
 
 async function getGraph(clusterId: string): Promise<ReactFlowData | null> {
   try {
-    const res = await get<any>(`/api/graph/${clusterId}`)
-    // Could be wrapped in react_flow_graph key
+    const res = await get<any>(`/api/graph/${encodeURIComponent(clusterId)}`)
     if (res?.nodes && res?.edges) return res
     if (res?.react_flow_graph) return res.react_flow_graph
     return null
@@ -130,6 +121,7 @@ export const api = {
     get<{ features: Array<{ feature: string; importance: number }> }>('/api/model/features')
       .then(r => r.features ?? [])
       .catch(() => [] as any[]),
-  investigate:   (customerId: string) =>
-    post<unknown>('/api/investigate', { customer_id: customerId }),
+  // investigate takes cluster_id (RING-001 etc), not customer_id
+  investigate:   (clusterId: string) =>
+    post<unknown>('/api/investigate', { cluster_id: clusterId }),
 }
