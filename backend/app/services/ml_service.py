@@ -22,7 +22,10 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
+from .risk_engine import RiskEngine
+
 log = logging.getLogger(__name__)
+_risk_engine = RiskEngine()
 
 
 class MLService:
@@ -34,7 +37,8 @@ class MLService:
         self._evaluation_dir = evaluation_dir
 
         self._model = None
-        self._feature_cols: list[str] = []
+        self._feature_cols: list[str] = []   # expected cols from model_meta.json
+        self._active_cols:  list[str] = []   # actual cols present in features.parquet
         self._threshold: float = 0.1
         self._meta: dict = {}
         self._shap_importance: dict = {}
@@ -85,7 +89,12 @@ class MLService:
         return files[-1] if files else None
 
     def _load_feature_index(self) -> None:
-        """Load features.parquet and build customer_id → numpy row index."""
+        """Load features.parquet and build customer_id → numpy row index.
+
+        #6: Uses a single self._active_cols list — the definitive intersection of
+        expected model features and available parquet columns. explain() uses this
+        same list so SHAP indices always line up with the stored numpy rows.
+        """
         feat_path = self._processed_dir / "features.parquet"
         if not feat_path.exists():
             log.warning("  features.parquet not found — ML scoring will return 0.0")
@@ -98,13 +107,22 @@ class MLService:
             log.warning("  features.parquet has no customer_id column")
             return
 
-        available = [c for c in self._feature_cols if c in df.columns]
-        if not available:
+        # Resolve active columns — warn (not raise) on missing so startup
+        # continues even if the parquet has drifted slightly from model_meta.
+        missing = [c for c in self._feature_cols if c not in df.columns]
+        if missing:
+            log.warning(
+                f"  features.parquet is missing {len(missing)} expected feature(s): "
+                f"{missing[:5]}{'...' if len(missing) > 5 else ''} — "
+                "SHAP explanations may be partial"
+            )
+        self._active_cols = [c for c in self._feature_cols if c in df.columns]
+        if not self._active_cols:
             log.warning("  No expected feature columns found in features.parquet")
             return
 
-        # Fill NaN with 0 for inference
-        feat_matrix = df[available].fillna(0).values.astype(np.float32)
+        # Fill NaN with 0 for inference; build index keyed on the active cols only
+        feat_matrix = df[self._active_cols].fillna(0).values.astype(np.float32)
         self._feature_index = {
             str(row["customer_id"]): feat_matrix[i]
             for i, (_, row) in enumerate(df.iterrows())
@@ -139,16 +157,20 @@ class MLService:
         return result
 
     def explain(self, customer_id: str, top_n: int = 5) -> list[dict]:
-        """Return top-N SHAP feature contributions for a customer."""
+        """Return top-N SHAP feature contributions for a customer.
+
+        #6: Uses self._active_cols (not recomputed from _feature_cols) so the
+        column index into the stored numpy row always matches.
+        """
         if not self._shap_importance or customer_id not in self._feature_index:
             return []
         row = self._feature_index[customer_id]
-        available = [c for c in self._feature_cols if c in self._shap_importance]
         explanations = []
-        for col in available:
-            feat_idx = self._feature_cols.index(col) if col in self._feature_cols else -1
-            feat_val = float(row[feat_idx]) if feat_idx >= 0 else 0.0
-            importance = float(self._shap_importance.get(col, 0.0))
+        for feat_idx, col in enumerate(self._active_cols):
+            if col not in self._shap_importance:
+                continue
+            feat_val   = float(row[feat_idx])
+            importance = float(self._shap_importance[col])
             explanations.append({
                 "feature":    col,
                 "value":      feat_val,
@@ -159,13 +181,12 @@ class MLService:
         return explanations[:top_n]
 
     def get_risk_level(self, score: float) -> str:
-        if score >= 0.80:
-            return "CRITICAL"
-        if score >= 0.60:
-            return "HIGH"
-        if score >= 0.30:
-            return "MEDIUM"
-        return "LOW"
+        """#12: Delegate to RiskEngine — single source of truth for risk buckets."""
+        return _risk_engine.get_risk_level(score)
+
+    def is_flagged(self, customer_id: str) -> bool:
+        """#9: Use the trained optimal threshold (not hardcoded 0.5) for abuse flag."""
+        return self.predict(customer_id) >= self._threshold
 
     def get_model_metrics(self) -> dict:
         return self._eval_results

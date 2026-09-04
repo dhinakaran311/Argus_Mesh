@@ -32,7 +32,10 @@ class Settings(BaseSettings):
     )
 
     # -------------------------------------------------------------------------
-    # Supabase
+    # Supabase (RESERVED — not currently used)
+    # #17: The DataStore in db/datastore.py is pure in-memory CSV-backed.
+    # These settings are placeholders for a future real-Supabase migration.
+    # The `supabase` package in requirements.txt is similarly unused.
     # -------------------------------------------------------------------------
     supabase_url: str = ""
     supabase_anon_key: str = ""
@@ -57,8 +60,8 @@ class Settings(BaseSettings):
     # Groq
     # -------------------------------------------------------------------------
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
-    groq_fast_model: str = "llama-3.1-8b-instant"
+    groq_model: str = "compound-beta"          # verified available on this key
+    groq_fast_model: str = "compound-beta-mini"  # verified available on this key
 
     # -------------------------------------------------------------------------
     # HuggingFace Embeddings
@@ -113,7 +116,18 @@ class Settings(BaseSettings):
         return ROOT_DIR / "graph" / "queries"
 
 
-@lru_cache(maxsize=1)
+_settings_cache: Settings | None = None
+
+
 def get_settings() -> Settings:
-    """Return a cached Settings instance (reads .env once)."""
-    return Settings()
+    """Return a cached Settings instance (reads .env once per process)."""
+    global _settings_cache
+    if _settings_cache is None:
+        _settings_cache = Settings()
+    return _settings_cache
+
+
+def clear_settings_cache() -> None:
+    """Invalidate the settings cache (called by lifespan on hot reload)."""
+    global _settings_cache
+    _settings_cache = None

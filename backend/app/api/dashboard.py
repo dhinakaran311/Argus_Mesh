@@ -5,11 +5,14 @@ AbuseRing Sentinel — Dashboard Overview Endpoint
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Request
 
 from ..models.risk import DashboardStats
 from ..services.risk_engine import RiskEngine
 
+log = logging.getLogger(__name__)
 router = APIRouter(tags=["Dashboard"])
 _engine = RiskEngine()
 
@@ -22,8 +25,12 @@ async def get_dashboard(request: Request) -> DashboardStats:
     """
     state = request.app.state
 
-    # Primary stats from Neo4j
-    neo4j_stats = state.graph.get_dashboard_summary()
+    # Primary stats from Neo4j; fall back to DataStore if Neo4j is unavailable
+    neo4j_stats = {}
+    try:
+        neo4j_stats = state.graph.get_dashboard_summary()
+    except (RuntimeError, Exception) as e:
+        log.warning(f"Neo4j dashboard query failed ({e}), using DataStore fallback")
 
     # Fallback to in-memory data store if Neo4j is unavailable
     if not neo4j_stats:

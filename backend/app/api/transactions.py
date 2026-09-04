@@ -14,7 +14,7 @@ router = APIRouter(tags=["Transactions"])
 @router.get("/transactions")
 async def list_transactions(
     request: Request,
-    customer_id: Optional[str] = Query(None),
+    customer_id: Optional[str] = Query(None, max_length=64),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ) -> dict:

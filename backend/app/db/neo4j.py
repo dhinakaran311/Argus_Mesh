@@ -3,16 +3,12 @@ backend/app/db/neo4j.py
 =======================
 AbuseRing Sentinel — Neo4j AuraDB Client
 
-Wraps the neo4j Python driver and exposes high-level query methods
-tied to the pre-built Cypher files in graph/queries/*.cypher.
-
-All queries are cached as module-level string constants so they are
-read from disk once at import time, not on every request.
+Wraps the neo4j Python driver and exposes high-level query methods.
+All Cypher queries are defined as module-level string constants.
 """
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
 from neo4j import GraphDatabase, Driver
@@ -20,27 +16,7 @@ from neo4j import GraphDatabase, Driver
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Load Cypher query files from graph/queries/
-# ---------------------------------------------------------------------------
-_QUERIES_DIR = Path(__file__).parent.parent.parent.parent / "graph" / "queries"
-
-
-def _load_cypher(filename: str) -> str:
-    path = _QUERIES_DIR / filename
-    if path.exists():
-        return path.read_text(encoding="utf-8")
-    log.warning(f"Cypher file not found: {path}")
-    return ""
-
-
-# Pre-load all query files once
-_RING_DETECTION_CYPHER = _load_cypher("abuse_ring_detection.cypher")
-_FIND_CLUSTERS_CYPHER = _load_cypher("find_clusters.cypher")
-_CLUSTER_DETAIL_CYPHER = _load_cypher("get_cluster_detail.cypher")
-_ENTITY_CONNECTIONS_CYPHER = _load_cypher("get_entity_connections.cypher")
-
-# ---------------------------------------------------------------------------
-# Inline queries for specific needs (not in files)
+# Inline queries (single source of truth)
 # ---------------------------------------------------------------------------
 
 _DASHBOARD_QUERY = """
@@ -95,9 +71,9 @@ WITH d, members, cluster_size, cluster_return_rate, avg_ml_score,
      CASE WHEN cluster_size >= 30 THEN 1.0 ELSE toFloat(cluster_size) / 30 END AS size_signal,
      cluster_return_rate AS return_signal,
      CASE
-         WHEN duration.between(earliest_created, latest_created).hours <= 24 THEN 1.0
-         WHEN duration.between(earliest_created, latest_created).hours <= 72 THEN 0.7
-         WHEN duration.between(earliest_created, latest_created).hours <= 168 THEN 0.4
+         WHEN earliest_created IS NOT NULL AND latest_created IS NOT NULL AND duration.between(datetime(replace(earliest_created, ' ', 'T')), datetime(replace(latest_created, ' ', 'T'))).hours <= 24 THEN 1.0
+         WHEN earliest_created IS NOT NULL AND latest_created IS NOT NULL AND duration.between(datetime(replace(earliest_created, ' ', 'T')), datetime(replace(latest_created, ' ', 'T'))).hours <= 72 THEN 0.7
+         WHEN earliest_created IS NOT NULL AND latest_created IS NOT NULL AND duration.between(datetime(replace(earliest_created, ' ', 'T')), datetime(replace(latest_created, ' ', 'T'))).hours <= 168 THEN 0.4
          ELSE 0.1
      END AS burst_signal
 WITH d, members, cluster_size, cluster_return_rate, avg_ml_score,
@@ -168,6 +144,46 @@ RETURN
     m.name            AS merchant_name
 """
 
+# #13: Single-cluster aggregate — avoids the O(n) get_clusters(limit=200) scan
+_CLUSTER_DETAIL_AGGREGATE_QUERY = """
+MATCH (c:Customer)-[:USES]->(d:Device {id: $device_id})
+WITH d,
+     collect(DISTINCT c)        AS members,
+     count(DISTINCT c)          AS cluster_size,
+     avg(c.return_rate)         AS cluster_return_rate,
+     avg(c.risk_score)          AS avg_ml_score,
+     sum(c.num_transactions)    AS total_transactions,
+     sum(c.num_returns)         AS total_returns,
+     min(c.account_created_at)  AS earliest_created,
+     max(c.account_created_at)  AS latest_created
+WITH d, members, cluster_size, cluster_return_rate, avg_ml_score,
+     total_transactions, total_returns,
+     CASE WHEN cluster_size >= 30 THEN 1.0 ELSE toFloat(cluster_size) / 30 END AS size_signal,
+     cluster_return_rate AS return_signal,
+     CASE
+         WHEN earliest_created IS NOT NULL AND latest_created IS NOT NULL AND duration.between(datetime(replace(earliest_created, ' ', 'T')), datetime(replace(latest_created, ' ', 'T'))).hours <= 24 THEN 1.0
+         WHEN earliest_created IS NOT NULL AND latest_created IS NOT NULL AND duration.between(datetime(replace(earliest_created, ' ', 'T')), datetime(replace(latest_created, ' ', 'T'))).hours <= 72 THEN 0.7
+         WHEN earliest_created IS NOT NULL AND latest_created IS NOT NULL AND duration.between(datetime(replace(earliest_created, ' ', 'T')), datetime(replace(latest_created, ' ', 'T'))).hours <= 168 THEN 0.4
+         ELSE 0.1
+     END AS burst_signal
+RETURN
+    d.id                                                    AS cluster_id,
+    cluster_size,
+    round(cluster_return_rate * 1000) / 1000                AS cluster_return_rate,
+    round(avg_ml_score * 1000) / 1000                       AS avg_ml_score,
+    total_transactions,
+    total_returns,
+    round((0.35 * size_signal + 0.40 * return_signal + 0.25 * burst_signal) * 1000) / 1000
+                                                            AS graph_score,
+    round(
+        (0.40 * avg_ml_score +
+         0.30 * (0.35 * size_signal + 0.40 * return_signal + 0.25 * burst_signal) +
+         0.30 * cluster_return_rate) * 1000
+    ) / 1000                                                AS combined_risk_score,
+    [m IN members | m.id]                                   AS member_ids,
+    size([m IN members WHERE m.is_abuse])                   AS abuse_count
+"""
+
 
 class Neo4jClient:
     """Thin wrapper around the Neo4j Python driver for AbuseRing Sentinel."""
@@ -217,6 +233,11 @@ class Neo4jClient:
     def get_entity_graph(self, device_id: str) -> list[dict]:
         """Returns raw rows for building a React Flow graph."""
         return self.run_query(_ENTITY_GRAPH_QUERY, {"device_id": device_id})
+
+    def get_cluster_detail_row(self, device_id: str) -> dict:
+        """#13: Single-cluster aggregate query — O(1) instead of scanning top-200."""
+        rows = self.run_query(_CLUSTER_DETAIL_AGGREGATE_QUERY, {"device_id": device_id})
+        return rows[0] if rows else {}
 
     def health_check(self) -> bool:
         try:

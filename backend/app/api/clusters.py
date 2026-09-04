@@ -11,7 +11,7 @@ import math
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Request, Query, HTTPException
+from fastapi import APIRouter, Request, Query, HTTPException, Path
 
 from ..models.cluster import ClusterSummary, ClusterDetail, ReactFlowGraph, ReactFlowNode, ReactFlowEdge
 from ..models.customer import CustomerSummary
@@ -185,7 +185,10 @@ async def list_clusters(
 
 
 @router.get("/clusters/{cluster_id}", response_model=ClusterDetail)
-async def get_cluster_detail(cluster_id: str, request: Request) -> ClusterDetail:
+async def get_cluster_detail(
+    cluster_id: str = Path(..., min_length=1, max_length=64),
+    request: Request = None,
+) -> ClusterDetail:
     """Full cluster detail. Falls back to DataStore if Neo4j has no edges."""
     detail = None
     try:
@@ -202,21 +205,27 @@ async def get_cluster_detail(cluster_id: str, request: Request) -> ClusterDetail
 
 
 @router.get("/graph/{cluster_id}")
-async def get_cluster_graph(cluster_id: str, request: Request) -> dict:
+async def get_cluster_graph(
+    cluster_id: str = Path(..., min_length=1, max_length=64),
+    request: Request = None,
+) -> dict:
     """React Flow graph data for a cluster. Falls back to DataStore layout."""
     rf = None
+
+    # Primary: ask GraphService to build the React Flow graph directly from Neo4j
     try:
-        detail = request.app.state.graph.get_cluster_detail(cluster_id)
-        if detail:
-            rf = detail.react_flow_graph
+        rf = request.app.state.graph.get_react_flow_graph(cluster_id)
     except Exception as e:
         log.warning(f"Neo4j graph query failed ({e}), using DataStore fallback")
 
-    if not rf or (not rf.nodes):
+    # DataStore fallback: works for RING-XXX label IDs from abuse_labels.csv
+    if not rf or not rf.nodes:
         rf = _graph_from_datastore(request.app.state.data, cluster_id)
 
-    if not rf:
-        raise HTTPException(status_code=404, detail=f"No graph data for cluster '{cluster_id}'")
+    # Last resort: return an empty graph rather than 404 so the UI shows
+    # "Graph data unavailable" instead of crashing with a network error
+    if not rf or not rf.nodes:
+        return {"nodes": [], "edges": []}
 
     return {
         "nodes": [n.model_dump() for n in rf.nodes],

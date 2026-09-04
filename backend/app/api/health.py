@@ -7,13 +7,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 
 router = APIRouter(tags=["Health"])
 
 
 @router.get("/health")
-async def health_check(request: Request) -> dict:
+async def health_check(request: Request, response: Response) -> dict:
     app = request.app
     state = app.state
 
@@ -23,6 +23,11 @@ async def health_check(request: Request) -> dict:
     data_ok    = state.data.health_check()    if hasattr(state, "data")    else False
 
     overall = "ok" if (neo4j_ok and qdrant_ok and ml_ok and data_ok) else "degraded"
+
+    # #5: Return HTTP 503 when any service is down so load-balancers / monitoring
+    # tools can detect the degraded state instead of always seeing 200 OK.
+    if overall != "ok":
+        response.status_code = 503
 
     return {
         "status":    overall,

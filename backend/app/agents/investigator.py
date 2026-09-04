@@ -34,7 +34,7 @@ def investigator_node(state: InvestigationState) -> InvestigationState:
 
     # -- Facts ---------------------------------------------------------------
     try:
-        facts = get_cluster_facts(cluster_id, data, ml)
+        facts = get_cluster_facts(cluster_id, data, ml, neo4j=neo4j)
         events.append({
             "step":    "facts",
             "message": f"Retrieved facts for cluster {cluster_id}",
@@ -62,7 +62,7 @@ def investigator_node(state: InvestigationState) -> InvestigationState:
 
     # -- ML explanation ------------------------------------------------------
     try:
-        ml_data = get_ml_explanation(cluster_id, data, ml)
+        ml_data = get_ml_explanation(cluster_id, data, ml, neo4j=neo4j)
         events.append({
             "step":    "ml",
             "message": f"ML scoring complete — avg risk {ml_data.get('avg_ml_score', 0.0):.2f}",

@@ -19,15 +19,20 @@ Shutdown:
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
-from .config import get_settings
+from .config import get_settings, clear_settings_cache
 from .db.neo4j import Neo4jClient
 from .db.qdrant import QdrantDB
-from .db.supabase import DataStore
+from .db.datastore import DataStore
 from .services.ml_service import MLService
 from .services.embed_service import EmbedService
 from .services.graph_service import GraphService
@@ -37,7 +42,6 @@ from .api import (
     health,
     dashboard,
     clusters,
-    graph,
     transactions,
     model,
     rag,
@@ -59,11 +63,28 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise all services on startup, tear down on shutdown."""
+    # Clear cached settings so hot-reload picks up .env changes immediately
+    clear_settings_cache()
     settings = get_settings()
     log.info("=" * 60)
     log.info("  AbuseRing Sentinel — Starting up")
     log.info("=" * 60)
 
+    # -------------------------------------------------------------------------
+    # 0. Populate os.environ from pydantic-settings values
+    #    Third-party libraries (ChatGroq, HuggingFace, etc.) read os.environ
+    #    directly. pydantic-settings does NOT populate os.environ automatically.
+    # -------------------------------------------------------------------------
+    _env_exports = {
+        "GROQ_API_KEY":          settings.groq_api_key,
+        "HUGGINGFACE_API_KEY":   settings.huggingface_api_key,
+        "NEO4J_URI":             settings.neo4j_uri,
+        "QDRANT_API_KEY":        settings.qdrant_api_key,
+    }
+    for k, v in _env_exports.items():
+        if v and not os.environ.get(k):
+            os.environ[k] = v
+            log.info(f"  Exported {k} to os.environ")
     # -----------------------------------------------------------------------
     # 1. Neo4j
     # -----------------------------------------------------------------------
@@ -190,6 +211,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# #8: Register slowapi limiter on the app so @limiter.limit() decorators work
+from .api.investigate import limiter as _investigate_limiter  # noqa: E402
+app.state.limiter = _investigate_limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
@@ -198,11 +225,24 @@ _PREFIX = "/api"
 app.include_router(health.router,       prefix=_PREFIX)
 app.include_router(dashboard.router,    prefix=_PREFIX)
 app.include_router(clusters.router,     prefix=_PREFIX)
-app.include_router(graph.router,        prefix=_PREFIX)
 app.include_router(transactions.router, prefix=_PREFIX)
 app.include_router(model.router,        prefix=_PREFIX)
 app.include_router(rag.router,          prefix=_PREFIX)
 app.include_router(investigate.router,  prefix=_PREFIX)
+
+
+# ---------------------------------------------------------------------------
+# Global exception handlers
+# ---------------------------------------------------------------------------
+
+@app.exception_handler(RuntimeError)
+async def runtime_error_handler(request: Request, exc: RuntimeError):
+    """#4: Return 503 instead of leaking raw 500s when Neo4j/Qdrant are degraded."""
+    log.error(f"RuntimeError on {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Service temporarily unavailable", "reason": str(exc)},
+    )
 
 
 @app.get("/")

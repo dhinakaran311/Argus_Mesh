@@ -45,6 +45,7 @@ class ClusterSummary(BaseModel):
     total_returns: int
     member_ids: list[str]
     abuse_count: int
+    ring_type: Optional[str] = None  # populated from member data or labels CSV
 
 
 class ClusterDetail(ClusterSummary):

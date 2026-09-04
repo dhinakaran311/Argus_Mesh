@@ -47,6 +47,7 @@ class GraphService:
         result = []
         for r in rows:
             score = float(r.get("combined_risk_score", 0.0))
+            members_raw = r.get("member_ids") or []
             result.append(ClusterSummary(
                 cluster_id=str(r["cluster_id"]),
                 cluster_size=int(r.get("cluster_size", 0)),
@@ -57,8 +58,9 @@ class GraphService:
                 cluster_return_rate=float(r.get("cluster_return_rate", 0.0)),
                 total_transactions=int(r.get("total_transactions", 0)),
                 total_returns=int(r.get("total_returns", 0)),
-                member_ids=[str(m) for m in (r.get("member_ids") or [])],
+                member_ids=[str(m) for m in members_raw],
                 abuse_count=int(r.get("abuse_count", 0)),
+                ring_type=None,  # resolved on demand in cluster detail
             ))
         return result
 
@@ -67,39 +69,51 @@ class GraphService:
     # -----------------------------------------------------------------------
 
     def get_cluster_detail(self, cluster_id: str) -> Optional[ClusterDetail]:
-        # Fetch the cluster summary row
-        clusters = self.get_clusters(limit=200)
-        summary = next((c for c in clusters if c.cluster_id == cluster_id), None)
-        if not summary:
-            # Build a minimal summary from member query
-            members_raw = self._neo4j.get_cluster_members(cluster_id)
-            if not members_raw:
-                return None
-            summary = ClusterSummary(
-                cluster_id=cluster_id,
-                cluster_size=len(members_raw),
-                risk_level="MEDIUM",
-                combined_risk_score=0.5,
-                avg_ml_score=0.0,
-                graph_score=0.0,
-                cluster_return_rate=0.0,
-                total_transactions=0,
-                total_returns=0,
-                member_ids=[str(m["customer_id"]) for m in members_raw],
-                abuse_count=sum(1 for m in members_raw if m.get("is_abuse")),
-            )
-        else:
-            members_raw = self._neo4j.get_cluster_members(cluster_id)
+        """Uses member query to build detail. Graph is fetched separately via get_react_flow_graph."""
+        members_raw = self._neo4j.get_cluster_members(cluster_id)
+        if not members_raw:
+            return None
+
+        # Derive aggregate stats directly from members
+        risk_scores    = [float(m.get("risk_score", 0.0)) for m in members_raw]
+        return_rates   = [float(m.get("return_rate", 0.0)) for m in members_raw]
+        num_txns       = [int(m.get("num_transactions", 0)) for m in members_raw]
+        num_returns    = [int(m.get("num_returns", 0)) for m in members_raw]
+        abuse_count    = sum(1 for m in members_raw if m.get("is_abuse"))
+        ring_type      = str(members_raw[0].get("ring_type") or "") or None
+        avg_ml         = sum(risk_scores) / max(len(risk_scores), 1)
+        avg_rr         = sum(return_rates) / max(len(return_rates), 1)
+        cluster_size   = len(members_raw)
+
+        # Use the avg_ml score as the combined risk proxy (aggregate query removed
+        # to save a round-trip; frontend shows the same data either way)
+        score       = avg_ml
+        graph_score = 0.0
+
+        summary = ClusterSummary(
+            cluster_id=cluster_id,
+            cluster_size=cluster_size,
+            risk_level=_risk_level(score),
+            combined_risk_score=round(score, 4),
+            avg_ml_score=round(avg_ml, 4),
+            graph_score=round(graph_score, 4),
+            cluster_return_rate=round(avg_rr, 4),
+            total_transactions=sum(num_txns),
+            total_returns=sum(num_returns),
+            member_ids=[str(m["customer_id"]) for m in members_raw],
+            abuse_count=abuse_count,
+            ring_type=ring_type,
+        )
 
         # Build CustomerSummary list
         members = []
         for m in members_raw:
-            score = float(m.get("risk_score", 0.0))
+            ms = float(m.get("risk_score", 0.0))
             members.append(CustomerSummary(
                 customer_id=str(m["customer_id"]),
                 is_abuse=bool(m.get("is_abuse", False)),
-                risk_score=score,
-                risk_level=_risk_level(score),
+                risk_score=ms,
+                risk_level=_risk_level(ms),
                 return_rate=float(m.get("return_rate", 0.0)),
                 num_transactions=int(m.get("num_transactions", 0)),
                 num_orders=int(m.get("num_orders", 0)),
@@ -111,13 +125,13 @@ class GraphService:
                 account_created_at=str(m.get("account_created_at") or ""),
             ))
 
-        # Build React Flow graph
-        rf_graph = self.get_react_flow_graph(cluster_id)
-
+        # NOTE: react_flow_graph is intentionally omitted here — the frontend
+        # fetches it separately via GET /api/graph/{id} so the detail page
+        # loads fast without waiting for the heavy entity-graph query.
         return ClusterDetail(
             **summary.model_dump(),
             members=members,
-            react_flow_graph=rf_graph,
+            react_flow_graph=None,
         )
 
     # -----------------------------------------------------------------------
