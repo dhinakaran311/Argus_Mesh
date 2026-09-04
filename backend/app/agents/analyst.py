@@ -4,7 +4,7 @@ backend/app/agents/analyst.py
 AbuseRing Sentinel — Analyst Node
 
 Synthesizes all gathered evidence into a structured investigation report
-using Groq's llama-3.3-70b-versatile LLM.
+using the Groq LLM (model configured via GROQ_MODEL env var).
 
 Steps:
   1. Build a rich evidence context string
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import datetime
@@ -92,28 +93,72 @@ def _fmt(obj: object) -> str:
     return str(obj)
 
 
+# Required keys in the final investigation JSON
+_REQUIRED_KEYS = {"risk_level", "final_risk_score", "summary", "key_evidence", "recommended_action"}
+
+
 def _extract_json(text: str) -> dict:
-    """Extract the first JSON object from a string, even if wrapped in prose."""
-    # Try direct parse first
+    """Extract the best-matching JSON investigation report from an LLM response.
+
+    compound-beta and groq/compound models prepend verbose reasoning chains
+    before emitting the final JSON.  A naive first-match regex grabs the wrong
+    (often nested) object.  This version:
+      1. Tries a direct parse of the whole text.
+      2. Scans ALL balanced brace groups and returns the first that contains
+         all required investigation fields.
+      3. Falls back to the last (outermost) brace group as a best-effort.
+      4. Returns a safe degraded report if everything fails.
+    """
+    # Normalise: strip BOMs, non-breaking hyphens, etc. that trip Windows codecs
+    text = text.encode("utf-8", errors="replace").decode("utf-8")
+
+    # 1. Direct parse
     try:
-        return json.loads(text.strip())
+        obj = json.loads(text.strip())
+        if isinstance(obj, dict):
+            return obj
     except json.JSONDecodeError:
         pass
-    # Try extracting JSON block
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
-    # Fallback: return a safe degraded report
+
+    # 2. Find every top-level {...} block and pick the best one
+    candidates: list[dict] = []
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
+        if ch == '{' and depth == 0:
+            start = i
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and start != -1:
+                fragment = text[start:i + 1]
+                try:
+                    obj = json.loads(fragment)
+                    if isinstance(obj, dict):
+                        candidates.append(obj)
+                except json.JSONDecodeError:
+                    pass
+                start = -1
+
+    # Prefer the first candidate that contains all required fields
+    for candidate in candidates:
+        if _REQUIRED_KEYS.issubset(candidate.keys()):
+            return candidate
+
+    # Last resort: return whatever dict we found
+    if candidates:
+        return candidates[-1]
+
+    # 3. Nothing parseable — return safe degraded report
+    log.warning("[analyst] _extract_json: no valid JSON found in LLM response")
     return {
-        "risk_level":          "HIGH",
-        "final_risk_score":    0.75,
-        "summary":             "Investigation completed but report parsing failed. Manual review recommended.",
-        "key_evidence":        ["Automated parsing error — please review raw evidence"],
-        "recommended_action":  "ESCALATE",
-        "confidence":          "LOW",
+        "risk_level":         "HIGH",
+        "final_risk_score":   0.75,
+        "summary":            "Investigation completed but report parsing failed. Manual review recommended.",
+        "key_evidence":       ["Automated parsing error — please review raw evidence"],
+        "recommended_action": "ESCALATE",
+        "confidence":         "LOW",
     }
 
 
@@ -123,7 +168,7 @@ def analyst_node(state: InvestigationState) -> InvestigationState:
     events = list(state.get("events", []))
     _services = state.get("_services", {})  # type: ignore
     groq_key  = _services.get("groq_api_key", "")
-    groq_model = _services.get("groq_model", "llama-3.3-70b-versatile")
+    groq_model = _services.get("groq_model", "compound-beta")
     vectors   = _services.get("vectors")
 
     # -- Emit "reasoning" step -----------------------------------------------
@@ -142,13 +187,18 @@ def analyst_node(state: InvestigationState) -> InvestigationState:
     )
 
     # -- Call Groq -----------------------------------------------------------
+    # ChatGroq validates via os.environ — set it explicitly so pydantic-settings
+    # values from .env are visible to the LangChain SDK.
+    if groq_key:
+        os.environ["GROQ_API_KEY"] = groq_key
     report = {}
     try:
         llm = ChatGroq(
-            api_key=groq_key,
+            groq_api_key=groq_key,
             model=groq_model,
             temperature=0.1,
             max_tokens=1024,
+            request_timeout=25,   # #16: prevent SSE stream from hanging on slow/stuck Groq responses
         )
         response = llm.invoke([
             SystemMessage(content=_SYSTEM_PROMPT),
