@@ -1,35 +1,49 @@
-// lib/sse.ts — EventSource wrapper for the investigation SSE stream
-export interface SSEStep {
-  type: 'step' | 'report' | 'error' | 'done'
-  step?: number
-  label?: string
-  status?: 'running' | 'done' | 'error'
-  report?: string
-  verdict?: string
-  risk_level?: string
-  error?: string
+// lib/sse.ts
+// Canonical SSE client for AbuseRing Sentinel investigation stream.
+// Exported from here; imported by investigate/page.tsx.
+
+export type StepStatus = 'pending' | 'active' | 'done'
+
+export interface InvestigationStep {
+  step: string    // starting | facts | graph | ml | rag | reasoning | complete | error
+  message: string
+  data?: unknown
 }
 
-type StepCallback = (step: SSEStep) => void
-
+/**
+ * Stream an investigation via SSE.
+ *
+ * @param clusterId  Ring cluster ID (e.g. RING-001 or a device-based ID like D0001)
+ * @param onStep     Called for every intermediate step event
+ * @param onReport   Called once with the final report data when step === 'complete'
+ * @param onError    Called on stream error
+ * @param onDone     Called when the stream closes cleanly
+ * @returns          Cancellation function
+ */
 export function streamInvestigation(
-  apiBase: string,
-  customerId: string,
-  onStep: StepCallback,
+  clusterId: string,
+  onStep: (step: string, message: string) => void,
+  onReport: (data: unknown) => void,
+  onError: (err: string) => void,
   onDone: () => void,
-  onError: (err: string) => void
 ): () => void {
-  // POST first to trigger the investigation, then open SSE
   const ctrl = new AbortController()
 
-  fetch(`${apiBase}/api/investigate`, {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (process.env.NEXT_PUBLIC_API_KEY) {
+    headers['X-API-Key'] = process.env.NEXT_PUBLIC_API_KEY
+  }
+
+  fetch('/api/investigate', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ customer_id: customerId }),
+    headers,
+    // #10: use cluster_id (not customer_id — that was the wrong field in the old sse.ts)
+    body: JSON.stringify({ cluster_id: clusterId }),
     signal: ctrl.signal,
   }).then(async (res) => {
     if (!res.ok) {
-      onError(`Server error ${res.status}`)
+      const text = await res.text().catch(() => res.statusText)
+      onError(`Server error ${res.status}: ${text}`)
       return
     }
 
@@ -52,11 +66,18 @@ export function streamInvestigation(
           const raw = line.slice(6).trim()
           if (!raw || raw === '[DONE]') { onDone(); return }
           try {
-            const event = JSON.parse(raw) as SSEStep
-            onStep(event)
-          } catch {
-            // skip malformed lines
-          }
+            const event = JSON.parse(raw) as InvestigationStep
+            const step  = event.step ?? ''
+            const msg   = event.message ?? step
+            if (step === 'complete' || step === 'done') {
+              onReport(event.data ?? event)
+              onDone()
+            } else if (step === 'error') {
+              onError(event.message ?? 'Investigation failed')
+            } else {
+              onStep(step, msg)
+            }
+          } catch { /* skip malformed lines */ }
         }
       }
     }

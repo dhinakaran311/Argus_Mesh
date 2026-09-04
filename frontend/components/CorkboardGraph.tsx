@@ -103,11 +103,14 @@ interface Props {
   flowData: { nodes: any[]; edges: any[] } | null
 }
 
-export default function CorkboardGraph({ flowData }: Props) {
-  // Memoize nodeTypes/edgeTypes to prevent React Flow warning #002
-  const nodeTypes = useMemo(() => ({ customer: CustomerNode }), [])
-  const edgeTypes = useMemo(() => ({ string: StringEdge }), [])
+// ─── Static nodeTypes / edgeTypes ─────────────────────────────────────────────
+// MUST be defined at MODULE level, NOT inside the component.
+// ReactFlow 12 compares object identity between renders; useMemo() is NOT
+// sufficient — it still creates a new ref on the first mount and triggers #002.
+const NODE_TYPES = { customer: CustomerNode } as const
+const EDGE_TYPES = { string: StringEdge } as const
 
+export default function CorkboardGraph({ flowData }: Props) {
   const positions = useMemo(
     () => spreadLayout(flowData?.nodes ?? []),
     [flowData?.nodes]
@@ -149,8 +152,8 @@ export default function CorkboardGraph({ flowData }: Props) {
       edges={edges}
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
-      nodeTypes={nodeTypes}
-      edgeTypes={edgeTypes}
+      nodeTypes={NODE_TYPES}
+      edgeTypes={EDGE_TYPES}
       fitView
       fitViewOptions={{ padding: 0.15, maxZoom: 0.9 }}
       minZoom={0.1}

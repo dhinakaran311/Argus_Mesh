@@ -5,10 +5,36 @@ const BASE = isServer
   ? (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000')
   : '' // client-side: use relative path through Next.js proxy rewrite
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { cache: 'no-store' })
-  if (!res.ok) throw new Error(`GET ${path} → ${res.status}`)
-  return res.json() as Promise<T>
+/** Fetch with a configurable timeout + optional ISR revalidation for server-side calls. */
+async function fetchWithTimeout<T>(
+  url: string,
+  opts: RequestInit = {},
+  timeoutMs = 30_000,
+): Promise<T> {
+  const controller = new AbortController()
+  const tid = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { ...opts, signal: controller.signal })
+    clearTimeout(tid)
+    if (!res.ok) throw new Error(`GET ${url} → ${res.status}`)
+    return res.json() as Promise<T>
+  } catch (err: any) {
+    clearTimeout(tid)
+    if (err?.name === 'AbortError') throw new Error(`GET ${url} timed out after ${timeoutMs / 1000}s`)
+    throw err
+  }
+}
+
+async function get<T>(path: string, cached = false): Promise<T> {
+  const url = `${BASE}${path}`
+  if (isServer && cached) {
+    return fetchWithTimeout<T>(
+      url,
+      { next: { revalidate: 30 } } as RequestInit,
+      10_000,
+    )
+  }
+  return fetchWithTimeout<T>(url, { cache: 'no-store' })
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -94,7 +120,9 @@ async function getTransactions(limit: number, offset: number): Promise<Transacti
 
 async function getClusters(limit: number): Promise<ClusterSummary[]> {
   try {
-    const res = await get<ClusterSummary[] | { clusters: ClusterSummary[] }>(`/api/clusters?limit=${limit}`)
+    const res = await get<ClusterSummary[] | { clusters: ClusterSummary[] }>(
+      `/api/clusters?limit=${limit}`, true  // cached: 30 s revalidate + 10 s timeout
+    )
     if (Array.isArray(res)) return res
     return (res as any).clusters ?? []
   } catch { return [] }
@@ -111,14 +139,14 @@ async function getGraph(clusterId: string): Promise<ReactFlowData | null> {
 
 export const api = {
   health:        () => get<HealthResponse>('/api/health'),
-  dashboard:     () => get<DashboardStats>('/api/dashboard'),
+  dashboard:     () => get<DashboardStats>('/api/dashboard', true),  // cached, heavy Neo4j query
   clusters:      (limit = 50) => getClusters(limit),
-  cluster:       (id: string) => get<ClusterSummary>(`/api/clusters/${encodeURIComponent(id)}`),
+  cluster:       (id: string) => get<ClusterSummary>(`/api/clusters/${encodeURIComponent(id)}`, true),
   graph:         (clusterId: string) => getGraph(clusterId),
   transactions:  (limit = 100, offset = 0) => getTransactions(limit, offset),
-  modelMetrics:  () => get<any>('/api/model/metrics'),
+  modelMetrics:  () => get<any>('/api/model/metrics', true),
   modelFeatures: () =>
-    get<{ features: Array<{ feature: string; importance: number }> }>('/api/model/features')
+    get<{ features: Array<{ feature: string; importance: number }> }>('/api/model/features', true)
       .then(r => r.features ?? [])
       .catch(() => [] as any[]),
   // investigate takes cluster_id (RING-001 etc), not customer_id

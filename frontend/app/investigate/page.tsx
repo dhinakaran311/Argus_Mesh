@@ -2,69 +2,7 @@
 import { useSearchParams } from 'next/navigation'
 import { useState, useRef, Suspense } from 'react'
 import RiskStamp from '@/components/RiskStamp'
-
-// SSE client — uses relative path through Next.js proxy (no CORS)
-function streamInvestigation(
-  clusterId: string,
-  onStep: (step: string, message: string) => void,
-  onReport: (data: any) => void,
-  onError: (err: string) => void,
-  onDone: () => void,
-): () => void {
-  const ctrl = new AbortController()
-
-  fetch('/api/investigate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cluster_id: clusterId }),
-    signal: ctrl.signal,
-  }).then(async (res) => {
-    if (!res.ok) {
-      const text = await res.text().catch(() => res.statusText)
-      onError(`Server error ${res.status}: ${text}`)
-      return
-    }
-
-    const reader = res.body?.getReader()
-    if (!reader) { onError('No response body'); return }
-
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) { onDone(); break }
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const raw = line.slice(6).trim()
-          if (!raw || raw === '[DONE]') { onDone(); return }
-          try {
-            const event = JSON.parse(raw)
-            const step = event.step ?? event.type ?? ''
-            const msg  = event.message ?? event.label ?? step
-            if (step === 'complete' || step === 'done') {
-              onReport(event.data ?? event)
-              onDone()
-            } else if (step === 'error') {
-              onError(event.message ?? 'Investigation failed')
-            } else {
-              onStep(step, msg)
-            }
-          } catch { /* skip malformed */ }
-        }
-      }
-    }
-  }).catch((err) => {
-    if (err.name !== 'AbortError') onError(String(err))
-  })
-
-  return () => ctrl.abort()
-}
+import { streamInvestigation } from '@/lib/sse'
 
 const STEP_ORDER = ['starting', 'facts', 'graph', 'ml', 'rag', 'reasoning']
 
@@ -140,7 +78,7 @@ function InvestigateClient() {
     <>
       <div className="page-header">
         <h1>Investigation</h1>
-        <p className="page-subtitle">AI case analysis — LangGraph + Groq llama-3.3-70b</p>
+        <p className="page-subtitle">AI case analysis — LangGraph + Groq compound-beta</p>
       </div>
 
       {/* Input — accepts RING-001 style IDs */}
